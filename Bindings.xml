@@ -1,0 +1,11 @@
+<Bindings>
+	<Binding name="FARTAB_CYCLE" header="FARTAB" description="Cycle furthest to closest enemy in combat">
+		FarTab_CycleNext()
+	</Binding>
+	<Binding name="FARTAB_REVERSE" description="Cycle closest to furthest enemy in combat">
+		FarTab_CyclePrev()
+	</Binding>
+	<Binding name="FARTAB_FURTHEST" description="Target the furthest enemy in combat">
+		FarTab_TargetFurthest()
+	</Binding>
+</Bindings>

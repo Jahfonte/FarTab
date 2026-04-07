@@ -1,0 +1,11 @@
+## Interface: 11200
+## Title: FarTab
+## Notes: Reverse tab-targeting: cycles enemies from furthest to closest. Only targets mobs in combat.
+## Author: TotemFoo
+## Version: 1.0.0
+## SavedVariablesPerCharacter: FarTabDB
+
+Bindings.xml
+FarTab.lua
+Minimap.lua
+Options.lua
