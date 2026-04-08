@@ -70,95 +70,93 @@ local function GetDistance(unit)
 end
 
 ----------------------------------------------
--- Nameplate Detection
-----------------------------------------------
-
-local function IsNamePlate(frame)
-    if not frame then return false end
-    -- Method 1: check frame type (vanilla nameplates are Buttons)
-    local ok, otype = pcall(frame.GetObjectType, frame)
-    if not ok or otype ~= "Button" then return false end
-    -- Method 2: check for nameplate border texture
-    local ok2, region = pcall(frame.GetRegions, frame)
-    if ok2 and region then
-        local ok3, tex = pcall(region.GetTexture, region)
-        if ok3 and tex == "Interface\\Tooltips\\Nameplate-Border" then return true end
-    end
-    -- Method 3: check for healthbar child (nameplates always have one)
-    local ok4, child1 = pcall(frame.GetChildren, frame)
-    if ok4 and child1 then
-        local ok5, ctype = pcall(child1.GetObjectType, child1)
-        if ok5 and ctype == "StatusBar" then return true end
-    end
-    return false
-end
-
-local function IsHostileColor(r, g, b)
-    -- red = hostile NPC, red-ish = hostile player
-    if r and r > 0.7 and g and g < 0.3 and b and b < 0.3 then return true end
-    return false
-end
-
-----------------------------------------------
 -- Nameplate Scanning (SuperWoW)
+-- Tries 3 methods to find nameplate GUIDs:
+--   1. pfUI nameplate frames (pfNamePlateN)
+--   2. Vanilla nameplate frames via WorldFrame
+--   3. All WorldFrame children brute-force
 ----------------------------------------------
+
+local seenGuid = {}
+
+local function TryAddEnemy(guid)
+    if not guid or guid == "" then return end
+    if seenGuid[guid] then return end
+
+    local okEx, exists = pcall(UnitExists, guid)
+    if not okEx or not exists then return end
+
+    -- hostile check
+    local okAtk, canAtk = pcall(UnitCanAttack, "player", guid)
+    if not okAtk or not canAtk then return end
+
+    -- dead check
+    local okDead, isDead = pcall(UnitIsDead, guid)
+    if okDead and isDead then return end
+
+    -- combat check: try mob first, fall back to player combat state
+    local inCombat = false
+    local okC, affC = pcall(UnitAffectingCombat, guid)
+    if okC and affC then
+        inCombat = true
+    elseif UnitAffectingCombat("player") then
+        inCombat = true
+    end
+    if not inCombat then return end
+
+    -- distance
+    local dist = GetDistance(guid)
+    if not dist or dist > (FarTabDB.maxRange or 100) then return end
+
+    local okN, name = pcall(UnitName, guid)
+    if not okN or not name then name = "?" end
+
+    seenGuid[guid] = true
+    table.insert(enemies, { guid = guid, name = name, dist = dist })
+end
 
 local function ScanNameplates()
     enemies = {}
+    seenGuid = {}
     if not superwow then return end
 
+    -- Method 1: scan pfUI nameplate frames directly (pfNamePlate1, pfNamePlate2, ...)
+    for idx = 1, 40 do
+        local pfPlate = getglobal("pfNamePlate" .. idx)
+        if pfPlate and pfPlate.parent then
+            local ok, guid = pcall(pfPlate.parent.GetName, pfPlate.parent, 1)
+            if ok and guid then TryAddEnemy(guid) end
+        end
+    end
+
+    -- Method 2: scan all WorldFrame children for vanilla nameplates
     local numChildren = WorldFrame:GetNumChildren()
-    if numChildren == 0 then return end
-
-    local children = { WorldFrame:GetChildren() }
-    for i = 1, numChildren do
-        local plate = children[i]
-        if plate and plate:IsVisible() and IsNamePlate(plate) then
-            -- get SuperWoW GUID from the vanilla nameplate frame
-            local ok, guid = pcall(plate.GetName, plate, 1)
-            if ok and guid and guid ~= "" then
-                -- check unit exists via multiple methods
-                local exists = false
-                if pcall(UnitExists, guid) then exists = UnitExists(guid) end
-
-                if exists then
-                    -- hostile check: try UnitCanAttack, fall back to healthbar color
-                    local hostile = false
-                    local okAtk, canAtk = pcall(UnitCanAttack, "player", guid)
-                    if okAtk and canAtk then
-                        hostile = true
-                    else
-                        -- fallback: check healthbar color (red = hostile)
-                        local okChild, hpbar = pcall(plate.GetChildren, plate)
-                        if okChild and hpbar then
-                            local okColor, r, g, b = pcall(hpbar.GetStatusBarColor, hpbar)
-                            if okColor then hostile = IsHostileColor(r, g, b) end
-                        end
+    if numChildren > 0 then
+        local children = { WorldFrame:GetChildren() }
+        for i = 1, numChildren do
+            local frame = children[i]
+            if frame then
+                -- try GetName(1) on every WorldFrame child - only nameplates return a GUID
+                local ok, guid = pcall(frame.GetName, frame, 1)
+                if ok and guid and guid ~= "" then
+                    -- verify it looks like a GUID (starts with 0x)
+                    if string.find(guid, "^0x") then
+                        TryAddEnemy(guid)
                     end
-
-                    -- dead check
-                    local dead = false
-                    local okDead, isDead = pcall(UnitIsDead, guid)
-                    if okDead then dead = isDead end
-
-                    -- combat check: try UnitAffectingCombat, fall back to player combat state
-                    local inCombat = false
-                    local okCombat, affCombat = pcall(UnitAffectingCombat, guid)
-                    if okCombat and affCombat then
-                        inCombat = true
-                    else
-                        -- fallback: if player is in combat and mob is hostile + not dead, assume in combat
-                        if UnitAffectingCombat("player") then
-                            inCombat = true
-                        end
-                    end
-
-                    if hostile and not dead and inCombat then
-                        local dist = GetDistance(guid)
-                        if dist and dist <= (FarTabDB.maxRange or 100) then
-                            local okName, name = pcall(UnitName, guid)
-                            if not okName or not name then name = "?" end
-                            table.insert(enemies, { guid = guid, name = name, dist = dist })
+                end
+                -- also check children of children (pfUI wraps plates)
+                local ok2, numSub = pcall(frame.GetNumChildren, frame)
+                if ok2 and numSub and numSub > 0 then
+                    local ok3, subs = pcall(function() return { frame:GetChildren() } end)
+                    if ok3 and subs then
+                        for j = 1, numSub do
+                            local sub = subs[j]
+                            if sub then
+                                local ok4, sguid = pcall(sub.GetName, sub, 1)
+                                if ok4 and sguid and sguid ~= "" and string.find(sguid, "^0x") then
+                                    TryAddEnemy(sguid)
+                                end
+                            end
                         end
                     end
                 end
@@ -336,6 +334,45 @@ local function HandleSlash(msg)
         Print(FarTabDB.enabled and "|cff00ff00Enabled|r" or "|cffff0000Disabled|r")
     elseif msg == "status" then
         Print("SuperWoW=" .. tostring(superwow) .. " | Enabled=" .. tostring(FarTabDB.enabled) .. " | MaxRange=" .. tostring(FarTabDB.maxRange))
+    elseif msg == "debug" then
+        Print("|cffffd700Debug scan:|r")
+        Print("SuperWoW=" .. tostring(superwow) .. " | PlayerInCombat=" .. tostring(UnitAffectingCombat("player")))
+        -- check pfUI plates
+        local pfCount = 0
+        for idx = 1, 40 do
+            local pfPlate = getglobal("pfNamePlate" .. idx)
+            if pfPlate then
+                pfCount = pfCount + 1
+                local pguid = ""
+                if pfPlate.parent then
+                    local ok, g = pcall(pfPlate.parent.GetName, pfPlate.parent, 1)
+                    if ok and g then pguid = g end
+                end
+                local vis = pfPlate:IsVisible() and "vis" or "hid"
+                DEFAULT_CHAT_FRAME:AddMessage("  pfNamePlate" .. idx .. " [" .. vis .. "] guid=" .. tostring(pguid))
+            end
+        end
+        Print("pfUI plates found: " .. pfCount)
+        -- check WorldFrame children
+        local wfCount = WorldFrame:GetNumChildren()
+        local npCount = 0
+        local children = { WorldFrame:GetChildren() }
+        for i = 1, wfCount do
+            local fr = children[i]
+            if fr then
+                local ok, g = pcall(fr.GetName, fr, 1)
+                if ok and g and g ~= "" and string.find(g, "^0x") then
+                    npCount = npCount + 1
+                    local okN, nm = pcall(UnitName, g)
+                    local okE, ex = pcall(UnitExists, g)
+                    DEFAULT_CHAT_FRAME:AddMessage("  WF[" .. i .. "] guid=" .. tostring(g) .. " name=" .. tostring(nm) .. " exists=" .. tostring(ex))
+                end
+            end
+        end
+        Print("WorldFrame children: " .. wfCount .. " | With GUIDs: " .. npCount)
+        -- run actual scan
+        RefreshEnemies()
+        Print("Enemies found: " .. getn(enemies))
     elseif msg == "range" or msg == "list" then
         RefreshEnemies()
         if getn(enemies) == 0 then
