@@ -83,6 +83,27 @@ local function GetModPrefix()
     return prefix
 end
 
+local function SaveCurrentBindings()
+    local set = GetCurrentBindingSet()
+    if not set then
+        set = 2
+    end
+    SaveBindings(set)
+end
+
+local function ClearBindingAction(bindingName, skipSave)
+    local key1, key2 = GetBindingKey(bindingName)
+    if key1 then
+        SetBinding(key1)
+    end
+    if key2 and key2 ~= key1 then
+        SetBinding(key2)
+    end
+    if not skipSave then
+        SaveCurrentBindings()
+    end
+end
+
 local function CreateKeybindButton(name, parent, label, bindingName, yPos)
     local row = CreateFrame("Frame", nil, parent)
     row:SetHeight(24)
@@ -129,11 +150,7 @@ local function CreateKeybindButton(name, parent, label, bindingName, yPos)
     local function HandleKey(key)
         if key == "ESCAPE" then
             -- unbind
-            local existing = GetBindingKey(bindingName)
-            if existing then
-                SetBinding(existing)
-                SaveBindings(GetCurrentBindingSet())
-            end
+            ClearBindingAction(bindingName)
             StopCapture()
             return
         end
@@ -145,8 +162,9 @@ local function CreateKeybindButton(name, parent, label, bindingName, yPos)
 
         local prefix = GetModPrefix()
         local fullKey = prefix .. key
+        ClearBindingAction(bindingName, true)
         SetBinding(fullKey, bindingName)
-        SaveBindings(GetCurrentBindingSet())
+        SaveCurrentBindings()
         StopCapture()
     end
 
@@ -172,8 +190,9 @@ local function CreateKeybindButton(name, parent, label, bindingName, yPos)
             local mapped = mousebuttonmap[arg1]
             if mapped then
                 local prefix = GetModPrefix()
+                ClearBindingAction(bindingName, true)
                 SetBinding(prefix .. mapped, bindingName)
-                SaveBindings(GetCurrentBindingSet())
+                SaveCurrentBindings()
                 StopCapture()
             end
         end)
@@ -189,11 +208,7 @@ local function CreateKeybindButton(name, parent, label, bindingName, yPos)
     clearText:SetPoint("CENTER", clearBtn, "CENTER", 0, 0)
     clearText:SetText("|cffff4444X|r")
     clearBtn:SetScript("OnClick", function()
-        local existing = GetBindingKey(bindingName)
-        if existing then
-            SetBinding(existing)
-            SaveBindings(GetCurrentBindingSet())
-        end
+        ClearBindingAction(bindingName)
         UpdateLabel()
     end)
     clearBtn:SetScript("OnEnter", function()

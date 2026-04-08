@@ -78,13 +78,58 @@ end
 ----------------------------------------------
 
 local seenGuid = {}
+local TryAddEnemy
 
-local function TryAddEnemy(guid)
-    if not guid or guid == "" then return end
+local function SafeGetNameArg(frame)
+    if not frame or type(frame.GetName) ~= "function" then return nil end
+    local ok, value = pcall(function()
+        return frame:GetName(1)
+    end)
+    if ok then
+        return value
+    end
+    return nil
+end
+
+local function GetGuidCandidate(value)
+    if value == nil then return nil end
+    if type(value) ~= "string" then
+        value = tostring(value)
+    end
+    if value == "" then return nil end
+    return value
+end
+
+local function GuidExists(guid)
+    local okEx, exists = pcall(UnitExists, guid)
+    if okEx and exists then
+        return true
+    end
+    return false
+end
+
+local function GetFrameGuid(frame)
+    local guid = GetGuidCandidate(SafeGetNameArg(frame))
+    if not guid then return nil end
+    if GuidExists(guid) then
+        return guid
+    end
+    return nil
+end
+
+local function AddFrameGuid(frame)
+    local guid = GetFrameGuid(frame)
+    if guid then
+        TryAddEnemy(guid)
+    end
+end
+
+TryAddEnemy = function(guid)
+    guid = GetGuidCandidate(guid)
+    if not guid then return end
     if seenGuid[guid] then return end
 
-    local okEx, exists = pcall(UnitExists, guid)
-    if not okEx or not exists then return end
+    if not GuidExists(guid) then return end
 
     -- hostile check
     local okAtk, canAtk = pcall(UnitCanAttack, "player", guid)
@@ -95,11 +140,12 @@ local function TryAddEnemy(guid)
     if okDead and isDead then return end
 
     -- combat check: try mob first, fall back to player combat state
+    local playerInCombat = UnitAffectingCombat("player")
     local inCombat = false
     local okC, affC = pcall(UnitAffectingCombat, guid)
     if okC and affC then
         inCombat = true
-    elseif UnitAffectingCombat("player") then
+    elseif playerInCombat then
         inCombat = true
     end
     if not inCombat then return end
@@ -115,6 +161,36 @@ local function TryAddEnemy(guid)
     table.insert(enemies, { guid = guid, name = name, dist = dist })
 end
 
+local function ScanFrameChildren(frame, depth, visited)
+    if not frame or depth < 0 then return end
+    if visited[frame] then return end
+    visited[frame] = true
+
+    AddFrameGuid(frame)
+
+    if depth == 0 or type(frame.GetNumChildren) ~= "function" then
+        return
+    end
+
+    local okCount, count = pcall(function()
+        return frame:GetNumChildren()
+    end)
+    if not okCount or not count or count < 1 then
+        return
+    end
+
+    local okChildren, children = pcall(function()
+        return { frame:GetChildren() }
+    end)
+    if not okChildren or not children then
+        return
+    end
+
+    for i = 1, count do
+        ScanFrameChildren(children[i], depth - 1, visited)
+    end
+end
+
 local function ScanNameplates()
     enemies = {}
     seenGuid = {}
@@ -122,49 +198,53 @@ local function ScanNameplates()
 
     -- Method 1: scan pfUI nameplate frames directly (pfNamePlate1, pfNamePlate2, ...)
     for idx = 1, 40 do
-        local pfPlate = getglobal("pfNamePlate" .. idx)
+        local pfPlate = getglobal("pfNamePlate" .. tostring(idx))
         if pfPlate and pfPlate.parent then
-            local ok, guid = pcall(pfPlate.parent.GetName, pfPlate.parent, 1)
-            if ok and guid then TryAddEnemy(guid) end
+            AddFrameGuid(pfPlate.parent)
         end
     end
 
-    -- Method 2: scan all WorldFrame children for vanilla nameplates
-    local numChildren = WorldFrame:GetNumChildren()
-    if numChildren > 0 then
-        local children = { WorldFrame:GetChildren() }
-        for i = 1, numChildren do
-            local frame = children[i]
-            if frame then
-                -- try GetName(1) on every WorldFrame child - only nameplates return a GUID
-                local ok, guid = pcall(frame.GetName, frame, 1)
-                if ok and guid and guid ~= "" then
-                    -- verify it looks like a GUID (starts with 0x)
-                    if string.find(guid, "^0x") then
-                        TryAddEnemy(guid)
-                    end
-                end
-                -- also check children of children (pfUI wraps plates)
-                local ok2, numSub = pcall(frame.GetNumChildren, frame)
-                if ok2 and numSub and numSub > 0 then
-                    local ok3, subs = pcall(function() return { frame:GetChildren() } end)
-                    if ok3 and subs then
-                        for j = 1, numSub do
-                            local sub = subs[j]
-                            if sub then
-                                local ok4, sguid = pcall(sub.GetName, sub, 1)
-                                if ok4 and sguid and sguid ~= "" and string.find(sguid, "^0x") then
-                                    TryAddEnemy(sguid)
-                                end
-                            end
-                        end
-                    end
-                end
+    -- Method 2/3: recursively scan WorldFrame descendants.
+    ScanFrameChildren(WorldFrame, 3, {})
+
+    table.sort(enemies, function(a, b) return a.dist > b.dist end)
+end
+
+local function PrintDebugWorldFrame(verbose)
+    local okCount, wfCount = pcall(function()
+        return WorldFrame:GetNumChildren()
+    end)
+    if not okCount or not wfCount or wfCount < 1 then
+        Print("WorldFrame children: 0")
+        return
+    end
+
+    local children = { WorldFrame:GetChildren() }
+    local candidateCount = 0
+
+    for i = 1, wfCount do
+        local frame = children[i]
+        if frame then
+            local raw = SafeGetNameArg(frame)
+            local guid = GetGuidCandidate(raw)
+            local exists = guid and GuidExists(guid) or false
+            local has0x = guid and string.find(guid, "^0x") and true or false
+
+            if guid then
+                candidateCount = candidateCount + 1
+            end
+
+            if verbose or guid then
+                DEFAULT_CHAT_FRAME:AddMessage(
+                    "  WF[" .. tostring(i) .. "] name1=" .. tostring(guid) ..
+                    " exists=" .. tostring(exists) ..
+                    " old0x=" .. tostring(has0x)
+                )
             end
         end
     end
 
-    table.sort(enemies, function(a, b) return a.dist > b.dist end)
+    Print("WorldFrame children: " .. tostring(wfCount) .. " | name1 candidates: " .. tostring(candidateCount))
 end
 
 ----------------------------------------------
@@ -268,7 +348,7 @@ local function TargetEnemy(entry)
     end
     if FarTabDB.showChat then
         local yd = format("%.0f", entry.dist)
-        Print(entry.name .. " (" .. yd .. " yd) [" .. cycleIdx .. "/" .. getn(enemies) .. "]")
+        Print(entry.name .. " (" .. yd .. " yd) [" .. tostring(cycleIdx) .. "/" .. tostring(getn(enemies)) .. "]")
     end
 end
 
@@ -334,52 +414,36 @@ local function HandleSlash(msg)
         Print(FarTabDB.enabled and "|cff00ff00Enabled|r" or "|cffff0000Disabled|r")
     elseif msg == "status" then
         Print("SuperWoW=" .. tostring(superwow) .. " | Enabled=" .. tostring(FarTabDB.enabled) .. " | MaxRange=" .. tostring(FarTabDB.maxRange))
-    elseif msg == "debug" then
+    elseif msg == "debug" or msg == "debug2" then
         Print("|cffffd700Debug scan:|r")
         Print("SuperWoW=" .. tostring(superwow) .. " | PlayerInCombat=" .. tostring(UnitAffectingCombat("player")))
         -- check pfUI plates
         local pfCount = 0
         for idx = 1, 40 do
-            local pfPlate = getglobal("pfNamePlate" .. idx)
+            local pfPlate = getglobal("pfNamePlate" .. tostring(idx))
             if pfPlate then
                 pfCount = pfCount + 1
                 local pguid = ""
                 if pfPlate.parent then
-                    local ok, g = pcall(pfPlate.parent.GetName, pfPlate.parent, 1)
-                    if ok and g then pguid = g end
+                    local g = SafeGetNameArg(pfPlate.parent)
+                    if g then pguid = tostring(g) end
                 end
                 local vis = pfPlate:IsVisible() and "vis" or "hid"
-                DEFAULT_CHAT_FRAME:AddMessage("  pfNamePlate" .. idx .. " [" .. vis .. "] guid=" .. tostring(pguid))
+                DEFAULT_CHAT_FRAME:AddMessage("  pfNamePlate" .. tostring(idx) .. " [" .. vis .. "] guid=" .. tostring(pguid))
             end
         end
-        Print("pfUI plates found: " .. pfCount)
-        -- check WorldFrame children
-        local wfCount = WorldFrame:GetNumChildren()
-        local npCount = 0
-        local children = { WorldFrame:GetChildren() }
-        for i = 1, wfCount do
-            local fr = children[i]
-            if fr then
-                local ok, g = pcall(fr.GetName, fr, 1)
-                if ok and g and g ~= "" and string.find(g, "^0x") then
-                    npCount = npCount + 1
-                    local okN, nm = pcall(UnitName, g)
-                    local okE, ex = pcall(UnitExists, g)
-                    DEFAULT_CHAT_FRAME:AddMessage("  WF[" .. i .. "] guid=" .. tostring(g) .. " name=" .. tostring(nm) .. " exists=" .. tostring(ex))
-                end
-            end
-        end
-        Print("WorldFrame children: " .. wfCount .. " | With GUIDs: " .. npCount)
+        Print("pfUI plates found: " .. tostring(pfCount))
+        PrintDebugWorldFrame(msg == "debug2")
         -- run actual scan
         RefreshEnemies()
-        Print("Enemies found: " .. getn(enemies))
+        Print("Enemies found: " .. tostring(getn(enemies)))
     elseif msg == "range" or msg == "list" then
         RefreshEnemies()
         if getn(enemies) == 0 then
             Print("No enemies in combat.")
         else
             for i, e in ipairs(enemies) do
-                DEFAULT_CHAT_FRAME:AddMessage("  " .. i .. ". " .. e.name .. " - " .. format("%.1f", e.dist) .. " yd")
+                DEFAULT_CHAT_FRAME:AddMessage("  " .. tostring(i) .. ". " .. tostring(e.name) .. " - " .. format("%.1f", e.dist) .. " yd")
             end
         end
     else
@@ -391,6 +455,8 @@ local function HandleSlash(msg)
             DEFAULT_CHAT_FRAME:AddMessage("  |cff00ccff/ft toggle|r - Enable/disable")
             DEFAULT_CHAT_FRAME:AddMessage("  |cff00ccff/ft status|r - Show status")
             DEFAULT_CHAT_FRAME:AddMessage("  |cff00ccff/ft list|r - List enemies by distance")
+            DEFAULT_CHAT_FRAME:AddMessage("  |cff00ccff/ft debug|r - Show detected GUID candidates")
+            DEFAULT_CHAT_FRAME:AddMessage("  |cff00ccff/ft debug2|r - Dump every WorldFrame child")
         end
     end
 end
