@@ -31,7 +31,7 @@ local initialized = false
 local defaults = {
     enabled = true,
     maxRange = 100,
-    showChat = true,
+    showChat = false,
     showMinimap = true,
     minimapAngle = 160,
 }
@@ -213,10 +213,7 @@ function FarTab_CycleNext()
     if not FarTabDB.enabled then return end
     RefreshEnemies()
     local n = getn(enemies)
-    if n == 0 then
-        Print("No enemies in combat nearby.")
-        return
-    end
+    if n == 0 then return end
     cycleIdx = cycleIdx + 1
     if cycleIdx > n then cycleIdx = 1 end
     TargetEnemy(enemies[cycleIdx])
@@ -226,10 +223,7 @@ function FarTab_CyclePrev()
     if not FarTabDB.enabled then return end
     RefreshEnemies()
     local n = getn(enemies)
-    if n == 0 then
-        Print("No enemies in combat nearby.")
-        return
-    end
+    if n == 0 then return end
     cycleIdx = cycleIdx - 1
     if cycleIdx < 1 then cycleIdx = n end
     TargetEnemy(enemies[cycleIdx])
@@ -238,10 +232,7 @@ end
 function FarTab_TargetFurthest()
     if not FarTabDB.enabled then return end
     RefreshEnemies()
-    if getn(enemies) == 0 then
-        Print("No enemies in combat nearby.")
-        return
-    end
+    if getn(enemies) == 0 then return end
     cycleIdx = 1
     TargetEnemy(enemies[1])
 end
