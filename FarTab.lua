@@ -70,6 +70,36 @@ local function GetDistance(unit)
 end
 
 ----------------------------------------------
+-- Nameplate Detection
+----------------------------------------------
+
+local function IsNamePlate(frame)
+    if not frame then return false end
+    -- Method 1: check frame type (vanilla nameplates are Buttons)
+    local ok, otype = pcall(frame.GetObjectType, frame)
+    if not ok or otype ~= "Button" then return false end
+    -- Method 2: check for nameplate border texture
+    local ok2, region = pcall(frame.GetRegions, frame)
+    if ok2 and region then
+        local ok3, tex = pcall(region.GetTexture, region)
+        if ok3 and tex == "Interface\\Tooltips\\Nameplate-Border" then return true end
+    end
+    -- Method 3: check for healthbar child (nameplates always have one)
+    local ok4, child1 = pcall(frame.GetChildren, frame)
+    if ok4 and child1 then
+        local ok5, ctype = pcall(child1.GetObjectType, child1)
+        if ok5 and ctype == "StatusBar" then return true end
+    end
+    return false
+end
+
+local function IsHostileColor(r, g, b)
+    -- red = hostile NPC, red-ish = hostile player
+    if r and r > 0.7 and g and g < 0.3 and b and b < 0.3 then return true end
+    return false
+end
+
+----------------------------------------------
 -- Nameplate Scanning (SuperWoW)
 ----------------------------------------------
 
@@ -83,18 +113,53 @@ local function ScanNameplates()
     local children = { WorldFrame:GetChildren() }
     for i = 1, numChildren do
         local plate = children[i]
-        if plate and plate:IsVisible() and plate.GetName then
-            local guid = plate:GetName(1)
-            if guid and guid ~= "" and UnitExists(guid) then
-                if UnitCanAttack("player", guid)
-                   and not UnitIsDead(guid)
-                   and not UnitIsFriend("player", guid)
-                   and UnitAffectingCombat(guid)
-                then
-                    local dist = GetDistance(guid)
-                    if dist and dist <= (FarTabDB.maxRange or 100) then
-                        local name = UnitName(guid) or "?"
-                        table.insert(enemies, { guid = guid, name = name, dist = dist })
+        if plate and plate:IsVisible() and IsNamePlate(plate) then
+            -- get SuperWoW GUID from the vanilla nameplate frame
+            local ok, guid = pcall(plate.GetName, plate, 1)
+            if ok and guid and guid ~= "" then
+                -- check unit exists via multiple methods
+                local exists = false
+                if pcall(UnitExists, guid) then exists = UnitExists(guid) end
+
+                if exists then
+                    -- hostile check: try UnitCanAttack, fall back to healthbar color
+                    local hostile = false
+                    local okAtk, canAtk = pcall(UnitCanAttack, "player", guid)
+                    if okAtk and canAtk then
+                        hostile = true
+                    else
+                        -- fallback: check healthbar color (red = hostile)
+                        local okChild, hpbar = pcall(plate.GetChildren, plate)
+                        if okChild and hpbar then
+                            local okColor, r, g, b = pcall(hpbar.GetStatusBarColor, hpbar)
+                            if okColor then hostile = IsHostileColor(r, g, b) end
+                        end
+                    end
+
+                    -- dead check
+                    local dead = false
+                    local okDead, isDead = pcall(UnitIsDead, guid)
+                    if okDead then dead = isDead end
+
+                    -- combat check: try UnitAffectingCombat, fall back to player combat state
+                    local inCombat = false
+                    local okCombat, affCombat = pcall(UnitAffectingCombat, guid)
+                    if okCombat and affCombat then
+                        inCombat = true
+                    else
+                        -- fallback: if player is in combat and mob is hostile + not dead, assume in combat
+                        if UnitAffectingCombat("player") then
+                            inCombat = true
+                        end
+                    end
+
+                    if hostile and not dead and inCombat then
+                        local dist = GetDistance(guid)
+                        if dist and dist <= (FarTabDB.maxRange or 100) then
+                            local okName, name = pcall(UnitName, guid)
+                            if not okName or not name then name = "?" end
+                            table.insert(enemies, { guid = guid, name = name, dist = dist })
+                        end
                     end
                 end
             end
